@@ -12,6 +12,31 @@ const chatList = document.getElementById('chatList');
 // 存储限制（4MB = 4 * 1024 * 1024 字节）
 const STORAGE_LIMIT = 4 * 1024 * 1024;
 
+// 添加侧边栏切换功能
+const sidebar = document.querySelector('.sidebar');
+const toggleSidebarButton = document.getElementById('toggleSidebarButton');
+let isSidebarCollapsed = false;
+
+function toggleSidebar() {
+  isSidebarCollapsed = !isSidebarCollapsed;
+  sidebar.classList.toggle('collapsed', isSidebarCollapsed);
+  toggleSidebarButton.classList.toggle('collapsed', isSidebarCollapsed);
+  
+  // 保存状态到 storage
+  chrome.storage.local.set({ sidebarCollapsed: isSidebarCollapsed });
+}
+
+// 加载侧边栏状态
+chrome.storage.local.get(['sidebarCollapsed'], (result) => {
+  if (result.sidebarCollapsed) {
+    isSidebarCollapsed = result.sidebarCollapsed;
+    sidebar.classList.toggle('collapsed', isSidebarCollapsed);
+    toggleSidebarButton.classList.toggle('collapsed', isSidebarCollapsed);
+  }
+});
+
+toggleSidebarButton.addEventListener('click', toggleSidebar);
+
 // 检查存储空间使用情况
 async function checkStorageSize() {
   try {

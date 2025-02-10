@@ -54,17 +54,44 @@
       background-color: var(--bg-primary);
       color: var(--text-primary);
       overflow: hidden;
+      position: relative;
     }
+
     .sidebar {
-      min-width: 140px;
-      width: 140px;
-      flex-shrink: 0;
+      width: 120px;
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
       background-color: var(--bg-secondary);
       border-right: 1px solid var(--border-color);
       display: flex;
       flex-direction: column;
       padding: 12px;
+      transition: transform 0.3s ease;
+      z-index: 100;
     }
+    
+    .sidebar.collapsed {
+      transform: translateX(-100%);
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background-color: var(--bg-primary);
+      overflow: hidden;
+      margin-left: 144px; /* sidebar width + padding */
+      transition: margin-left 0.3s ease;
+      width: calc(100% - 144px);
+    }
+
+    .sidebar.collapsed ~ .main-content {
+      margin-left: 48px; /* 切换按钮宽度 + 间距 */
+      width: calc(100% - 48px);
+    }
+
     .header {
       display: flex;
       justify-content: space-between;
@@ -129,15 +156,6 @@
       border-radius: 4px;
       opacity: 0.7;
     }
-    .main-content {
-      flex: 1;
-      min-width: 300px;
-      display: flex;
-      flex-direction: column;
-      position: relative;
-      background-color: var(--bg-primary);
-      overflow: hidden;
-    }
     .main-header {
       position: fixed;
       top: 12px;
@@ -173,6 +191,7 @@
       display: flex;
       flex-direction: column;
       padding: 16px;
+      box-sizing: border-box;
     }
     #messages {
       flex: 1;
@@ -182,6 +201,7 @@
       background-color: var(--bg-secondary);
       border: 1px solid var(--border-color);
       border-radius: 8px;
+      box-sizing: border-box;
     }
     .message {
       margin-bottom: 12px;
@@ -189,6 +209,7 @@
       border-radius: 8px;
       max-width: 85%;
       word-wrap: break-word;
+      box-sizing: border-box;
     }
     .user-message {
       background-color: var(--message-user-bg);
@@ -308,6 +329,30 @@
     .resizing iframe {
       pointer-events: none;
     }
+
+    .toggle-sidebar-button {
+      position: fixed;
+      left: 144px;
+      top: 12px;
+      width: 28px;
+      height: 28px;
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      transition: left 0.3s ease;
+      box-shadow: 0 2px 8px var(--shadow-color);
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .toggle-sidebar-button.collapsed {
+      left: 12px;
+    }
   </style>
 </head>
 <body>
@@ -317,6 +362,7 @@
     </div>
     <div id="chatList" class="chat-list"></div>
   </div>
+  <button id="toggleSidebarButton" class="toggle-sidebar-button" title="切换侧边栏">≡</button>
   <div class="main-content">
     <div class="main-header">
       <button id="closeButton" class="close-button" title="关闭侧边栏">×</button>
