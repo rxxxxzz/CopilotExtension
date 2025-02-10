@@ -138,4 +138,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   }
+  
+  if (request.action === "get-tab-id") {
+    if (sender.tab) {
+      sendResponse({ tabId: sender.tab.id });
+    } else {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs.length > 0) {
+          sendResponse({ tabId: tabs[0].id });
+        } else {
+          sendResponse({ tabId: null });
+        }
+      });
+    }
+    return true;
+  }
 }); 

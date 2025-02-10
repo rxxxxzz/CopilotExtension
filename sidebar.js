@@ -144,12 +144,17 @@ function switchToChat(chatId) {
 
 // 保存所有对话
 async function saveChats() {
+  if (!isExtensionContextValid()) return;
+  
   return new Promise((resolve, reject) => {
-    chrome.storage.local.set({
+    const data = {
       chats: chats,
       currentChatId: currentChatId,
-      lastUpdate: Date.now()
-    }, () => {
+      lastUpdate: Date.now(),
+      tabId: window.tabId // 添加标签页ID
+    };
+    
+    chrome.storage.local.set(data, () => {
       if (chrome.runtime.lastError) {
         reject(chrome.runtime.lastError);
       } else {
@@ -161,10 +166,24 @@ async function saveChats() {
 
 // 加载所有对话
 function loadChats() {
-  chrome.storage.local.get(['chats', 'currentChatId'], (result) => {
+  if (!isExtensionContextValid()) return;
+
+  // 获取当前标签页ID
+  chrome.runtime.sendMessage({ action: 'get-tab-id' }, (response) => {
+    if (response && response.tabId) {
+      window.tabId = response.tabId;
+    }
+  });
+
+  chrome.storage.local.get(['chats', 'currentChatId', 'tabId'], (result) => {
     if (result.chats && result.chats.length > 0) {
       chats = result.chats;
-      currentChatId = result.currentChatId || chats[0].id;
+      // 只有当存储的标签页ID与当前标签页ID匹配时，才使用存储的currentChatId
+      if (result.tabId === window.tabId) {
+        currentChatId = result.currentChatId || chats[0].id;
+      } else {
+        currentChatId = chats[0].id;
+      }
     } else {
       createNewChat();
     }
@@ -222,6 +241,11 @@ function displayMessages() {
     const messageDiv = createMessageElement(message.content, message.type);
     messagesContainer.appendChild(messageDiv);
   });
+  scrollToBottom();
+}
+
+// 滚动到底部
+function scrollToBottom() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
@@ -237,7 +261,7 @@ function createMessageElement(text, type) {
 async function addMessage(text, type) {
   const messageDiv = createMessageElement(text, type);
   messagesContainer.appendChild(messageDiv);
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  scrollToBottom();
   
   const message = { content: text, type: type, timestamp: Date.now() };
   messages.push(message);
@@ -267,27 +291,65 @@ window.addEventListener('message', (event) => {
   }
 });
 
+// 检查扩展上下文是否有效
+function isExtensionContextValid() {
+  try {
+    return Boolean(chrome.runtime.id);
+  } catch (e) {
+    console.error('Extension context invalid:', e);
+    return false;
+  }
+}
+
 // 发送消息
 async function sendMessage() {
   const message = userInput.value.trim();
   if (!message) return;
 
-  // 添加用户消息
-  await addMessage(message, 'user');
-  userInput.value = '';
+  // 禁用输入和发送按钮
+  userInput.disabled = true;
   sendButton.disabled = true;
 
   try {
+    if (!isExtensionContextValid()) {
+      throw new Error('扩展上下文已失效，请刷新页面重试');
+    }
+
+    // 添加用户消息
+    await addMessage(message, 'user');
+    userInput.value = '';
+
     // 获取 API key
-    const { apiKey } = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'get-api-key' }, resolve);
+    const { apiKey } = await new Promise((resolve, reject) => {
+      if (!isExtensionContextValid()) {
+        reject(new Error('扩展上下文已失效'));
+        return;
+      }
+      chrome.runtime.sendMessage({ action: 'get-api-key' }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(response || {});
+        }
+      });
     });
 
     if (!apiKey) {
       throw new Error('请先设置 API Key');
     }
 
+    // 准备消息历史
+    const messageHistory = messages.map(msg => ({
+      role: msg.type === 'user' ? 'user' : 'assistant',
+      content: msg.content
+    }));
+
+    // 创建一个空的助手消息元素
+    const messageElement = await addMessage('', 'assistant');
+    let currentMessage = '';
+
     // 调用 DeepSeek API
+    const controller = new AbortController();
     const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -296,60 +358,120 @@ async function sendMessage() {
       },
       body: JSON.stringify({
         model: 'deepseek-chat',
-        messages: [{ role: 'user', content: message }],
-        stream: true
-      })
+        messages: messageHistory,
+        stream: true,
+        temperature: 0.7,
+        max_tokens: 2000
+      }),
+      signal: controller.signal
     });
 
     if (!response.ok) {
-      throw new Error(`API 请求失败: ${response.status}`);
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`API 请求失败: ${response.status} - ${errorData.error?.message || '未知错误'}`);
     }
 
     // 处理流式响应
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let currentMessage = '';
-    let messageElement = null;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
+        for (const line of lines) {
+          if (line.trim() === '') continue;
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
 
-          try {
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices[0]?.delta?.content || '';
+              if (content) {
+                currentMessage += content;
+                messageElement.textContent = currentMessage;
+
+                // 立即更新存储中的最后一条消息
+                if (isExtensionContextValid()) {
+                  const chat = chats.find(c => c.id === currentChatId);
+                  if (chat && chat.messages.length > 0) {
+                    chat.messages[chat.messages.length - 1].content = currentMessage;
+                    // 使用 requestIdleCallback 或 setTimeout 来异步保存
+                    if (window.requestIdleCallback) {
+                      requestIdleCallback(() => saveChats());
+                    } else {
+                      setTimeout(() => saveChats(), 0);
+                    }
+                  }
+                }
+
+                // 使用 requestAnimationFrame 来优化滚动性能
+                requestAnimationFrame(() => scrollToBottom());
+              }
+            } catch (e) {
+              console.error('解析响应数据失败:', e);
+            }
+          }
+        }
+      }
+      // 处理剩余的缓冲区
+      if (buffer.trim() && buffer.startsWith('data: ')) {
+        try {
+          const data = buffer.slice(6);
+          if (data !== '[DONE]') {
             const parsed = JSON.parse(data);
             const content = parsed.choices[0]?.delta?.content || '';
             if (content) {
               currentMessage += content;
-              if (!messageElement) {
-                messageElement = await addMessage(currentMessage, 'assistant');
-              } else {
-                messageElement.textContent = currentMessage;
-                // 更新存储中的最后一条消息
+              messageElement.textContent = currentMessage;
+              if (isExtensionContextValid()) {
                 const chat = chats.find(c => c.id === currentChatId);
                 if (chat && chat.messages.length > 0) {
                   chat.messages[chat.messages.length - 1].content = currentMessage;
                   await saveChats();
                 }
               }
+              scrollToBottom();
             }
-          } catch (e) {
-            console.error('解析响应数据失败:', e);
           }
+        } catch (e) {
+          console.error('解析最后的响应数据失败:', e);
         }
       }
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        console.log('Stream reading aborted');
+      } else {
+        throw e;
+      }
+    } finally {
+      reader.releaseLock();
+      controller.abort();
     }
   } catch (error) {
+    console.error('API 调用错误:', error);
+    // 移除空的助手消息（如果存在）
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage && lastMessage.type === 'assistant' && lastMessage.content === '') {
+      messages.pop();
+      if (isExtensionContextValid()) {
+        await saveChats();
+      }
+      displayMessages();
+    }
     await addMessage(`错误: ${error.message}`, 'error');
   } finally {
+    // 重新启用输入和发送按钮
+    userInput.disabled = false;
     sendButton.disabled = false;
+    userInput.focus();
   }
 }
 
@@ -367,21 +489,27 @@ closeButton.addEventListener('click', closeSidebar);
 
 // 监听存储变化
 chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (!isExtensionContextValid()) return;
+  
   if (namespace === 'local' && changes.chats) {
     const newChats = changes.chats.newValue;
     const newCurrentChatId = changes.currentChatId?.newValue;
+    const newTabId = changes.tabId?.newValue;
     
-    if (JSON.stringify(chats) !== JSON.stringify(newChats)) {
-      chats = newChats;
-      if (newCurrentChatId && newCurrentChatId !== currentChatId) {
-        switchToChat(newCurrentChatId);
-      } else {
-        const currentChat = chats.find(c => c.id === currentChatId);
-        if (currentChat) {
-          messages = currentChat.messages;
-          displayMessages();
+    // 只有当存储的标签页ID与当前标签页ID匹配时，才更新界面
+    if (newTabId === window.tabId) {
+      if (JSON.stringify(chats) !== JSON.stringify(newChats)) {
+        chats = newChats;
+        if (newCurrentChatId && newCurrentChatId !== currentChatId) {
+          switchToChat(newCurrentChatId);
+        } else {
+          const currentChat = chats.find(c => c.id === currentChatId);
+          if (currentChat) {
+            messages = currentChat.messages;
+            displayMessages();
+          }
+          updateChatList();
         }
-        updateChatList();
       }
     }
   }
