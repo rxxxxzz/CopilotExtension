@@ -3,144 +3,329 @@
 <head>
   <meta charset="UTF-8">
   <style>
+    :root {
+      --bg-primary: #f8f9fa;
+      --bg-secondary: #ffffff;
+      --border-color: #e0e0e0;
+      --text-primary: #000000;
+      --text-secondary: #666666;
+      --accent-color: #1a73e8;
+      --accent-hover: #1557b0;
+      --message-user-bg: #e3f2fd;
+      --message-assistant-bg: #f5f5f5;
+      --message-error-bg: #ffebee;
+      --message-error-text: #c62828;
+      --hover-bg: #f1f3f4;
+      --active-bg: #e8f0fe;
+      --active-text: #1a73e8;
+      --button-disabled: #cccccc;
+      --shadow-color: rgba(0, 0, 0, 0.1);
+      --hover-overlay: rgba(0, 0, 0, 0.05);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-primary: #202124;
+        --bg-secondary: #292a2d;
+        --border-color: #3c4043;
+        --text-primary: #e8eaed;
+        --text-secondary: #9aa0a6;
+        --accent-color: #8ab4f8;
+        --accent-hover: #93b7f8;
+        --message-user-bg: #1a4c7c;
+        --message-assistant-bg: #303134;
+        --message-error-bg: #4a1515;
+        --message-error-text: #ff8a80;
+        --hover-bg: #35363a;
+        --active-bg: #1a4c7c;
+        --active-text: #8ab4f8;
+        --button-disabled: #5f6368;
+        --shadow-color: rgba(0, 0, 0, 0.3);
+        --hover-overlay: rgba(255, 255, 255, 0.05);
+      }
+    }
+
     body {
       margin: 0;
       padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      font-family: system-ui, -apple-system, sans-serif;
+      height: 100vh;
+      display: flex;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      overflow: hidden;
     }
-    
-    .chat-container {
+    .sidebar {
+      min-width: 140px;
+      width: 140px;
+      flex-shrink: 0;
+      background-color: var(--bg-secondary);
+      border-right: 1px solid var(--border-color);
       display: flex;
       flex-direction: column;
-      height: 100vh;
-      background: #f5f5f5;
-      transform: translateZ(0);
-      -webkit-transform: translateZ(0);
+      padding: 12px;
     }
-    
-    .chat-header {
-      padding: 15px;
-      background: #fff;
-      border-bottom: 1px solid #e0e0e0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
     }
-    
-    .chat-messages {
+    .new-chat-button {
+      width: 28px;
+      height: 28px;
+      background-color: var(--accent-color);
+      color: var(--bg-secondary);
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .new-chat-button:hover {
+      background-color: var(--accent-hover);
+    }
+    .chat-list {
       flex: 1;
       overflow-y: auto;
-      padding: 15px;
-      will-change: transform;
-      -webkit-overflow-scrolling: touch;
     }
-    
+    .chat-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      margin-bottom: 4px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+    .chat-item:hover {
+      background-color: var(--hover-bg);
+    }
+    .chat-item.active {
+      background-color: var(--active-bg);
+      color: var(--active-text);
+    }
+    .chat-item-content {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-right: 4px;
+    }
+    .delete-chat-button {
+      visibility: hidden;
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 2px 4px;
+      font-size: 14px;
+      border-radius: 4px;
+      opacity: 0.7;
+    }
+    .main-content {
+      flex: 1;
+      min-width: 300px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      background-color: var(--bg-primary);
+      overflow: hidden;
+    }
+    .main-header {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 1000;
+      background-color: var(--bg-primary);
+      border-radius: 50%;
+      box-shadow: 0 2px 8px var(--shadow-color);
+    }
+    .close-button {
+      width: 32px;
+      height: 32px;
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      cursor: pointer;
+      font-size: 20px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border-radius: 50%;
+      position: relative;
+      z-index: 1001;
+      transition: background-color 0.2s ease;
+    }
+    .close-button:hover {
+      background-color: var(--hover-bg);
+      color: var(--text-primary);
+    }
+    .messages-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      margin-bottom: 16px;
+      padding: 16px;
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+    }
     .message {
-      margin: 8px 0;
-      padding: 10px;
+      margin-bottom: 12px;
+      padding: 12px;
       border-radius: 8px;
       max-width: 85%;
       word-wrap: break-word;
-      opacity: 0;
-      transform: translateY(10px);
-      animation: messageIn 0.3s ease forwards;
     }
-    
     .user-message {
-      background: #007AFF;
-      color: white;
+      background-color: var(--message-user-bg);
       margin-left: auto;
+      color: var(--text-primary);
     }
-    
-    .bot-message {
-      background: white;
+    .assistant-message {
+      background-color: var(--message-assistant-bg);
       margin-right: auto;
+      color: var(--text-primary);
     }
-    
-    .input-area {
-      padding: 15px;
-      background: white;
-      border-top: 1px solid #e0e0e0;
+    .error-message {
+      background-color: var(--message-error-bg);
+      color: var(--message-error-text);
+      margin: 0 auto;
     }
-    
     .input-container {
       display: flex;
       gap: 8px;
+      background-color: var(--bg-secondary);
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
     }
-    
-    #user-input {
+    #userInput {
       flex: 1;
       padding: 8px;
-      border: 1px solid #e0e0e0;
+      border: 1px solid var(--border-color);
       border-radius: 4px;
-      resize: none;
-      min-height: 40px;
-      max-height: 120px;
+      resize: vertical;
+      min-height: 20px;
+      max-height: 150px;
+      font-family: inherit;
+      background-color: var(--bg-secondary);
+      color: var(--text-primary);
     }
-    
-    #send-button {
+    #userInput::placeholder {
+      color: var(--text-secondary);
+    }
+    #sendButton {
       padding: 8px 16px;
-      background: #007AFF;
-      color: white;
+      background-color: var(--accent-color);
+      color: var(--bg-secondary);
       border: none;
       border-radius: 4px;
       cursor: pointer;
+      white-space: nowrap;
     }
-    
-    #send-button:disabled {
-      background: #cccccc;
+    #sendButton:hover {
+      background-color: var(--accent-hover);
     }
-    
-    .loading {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: #666;
-      padding: 10px;
+    #sendButton:disabled {
+      background-color: var(--button-disabled);
+      cursor: not-allowed;
     }
-    
-    .loading-dots {
-      display: flex;
-      gap: 4px;
-    }
-    
-    .loading-dots span {
+    /* 滚动条样式 */
+    ::-webkit-scrollbar {
       width: 8px;
-      height: 8px;
-      background: #666;
-      border-radius: 50%;
-      animation: bounce 1.4s infinite ease-in-out;
-      will-change: transform;
     }
-    
-    .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
-    .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
-    
-    @keyframes bounce {
-      0%, 80%, 100% { transform: scale(0); }
-      40% { transform: scale(1.0); }
+    ::-webkit-scrollbar-track {
+      background: var(--bg-primary);
     }
-    
-    @keyframes messageIn {
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-secondary);
+    }
+
+    /* 调节宽度把手样式 */
+    #resize-handle {
+      position: absolute;
+      top: 0;
+      left: -4px;
+      width: 8px;
+      height: 100%;
+      cursor: ew-resize;
+      z-index: 1000000;
+    }
+
+    #resize-handle::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 3px;
+      width: 2px;
+      height: 100%;
+      background-color: var(--border-color);
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    #resize-handle:hover::after {
+      opacity: 1;
+    }
+
+    /* 拖动时的覆盖层样式 */
+    #resize-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 999998;
+      cursor: ew-resize;
+      user-select: none;
+    }
+
+    /* 拖动时禁用文本选择 */
+    .resizing {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* 拖动时禁用 iframe 事件 */
+    .resizing iframe {
+      pointer-events: none;
     }
   </style>
 </head>
 <body>
-  <div class="chat-container">
-    <div class="chat-header">
-      <h2 style="margin: 0;">DeepSeek 助手</h2>
+  <div class="sidebar">
+    <div class="header">
+      <button id="newChatButton" class="new-chat-button" title="开始新对话">+</button>
     </div>
-    <div class="chat-messages" id="chat-messages"></div>
-    <div class="input-area">
+    <div id="chatList" class="chat-list"></div>
+  </div>
+  <div class="main-content">
+    <div class="main-header">
+      <button id="closeButton" class="close-button" title="关闭侧边栏">×</button>
+    </div>
+    <div class="messages-container">
+      <div id="messages"></div>
       <div class="input-container">
-        <textarea 
-          id="user-input" 
-          placeholder="输入消息..." 
-          rows="1"
-        ></textarea>
-        <button id="send-button">发送</button>
+        <textarea id="userInput" placeholder="输入消息..." rows="1"></textarea>
+        <button id="sendButton">发送</button>
       </div>
     </div>
   </div>
