@@ -253,8 +253,42 @@ function scrollToBottom() {
 function createMessageElement(text, type) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${type}-message`;
-  messageDiv.textContent = text;
+  
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content';
+  
+  if (type === 'assistant') {
+    try {
+      // 使用简化版的 Markdown 解析
+      contentDiv.innerHTML = marked.parse(text);
+    } catch (e) {
+      console.error('Markdown 解析失败:', e);
+      contentDiv.textContent = text;
+    }
+  } else {
+    // 用户消息保持纯文本
+    contentDiv.textContent = text;
+  }
+  
+  messageDiv.appendChild(contentDiv);
   return messageDiv;
+}
+
+// 更新消息内容
+function updateMessageContent(messageElement, text) {
+  const contentDiv = messageElement.querySelector('.message-content');
+  if (!contentDiv) return;
+
+  if (messageElement.classList.contains('assistant-message')) {
+    try {
+      contentDiv.innerHTML = marked.parse(text);
+    } catch (e) {
+      console.error('Markdown 解析失败:', e);
+      contentDiv.textContent = text;
+    }
+  } else {
+    contentDiv.textContent = text;
+  }
 }
 
 // 添加消息到界面和存储
@@ -396,7 +430,7 @@ async function sendMessage() {
               const content = parsed.choices[0]?.delta?.content || '';
               if (content) {
                 currentMessage += content;
-                messageElement.textContent = currentMessage;
+                updateMessageContent(messageElement, currentMessage);
 
                 // 立即更新存储中的最后一条消息
                 if (isExtensionContextValid()) {
@@ -430,7 +464,7 @@ async function sendMessage() {
             const content = parsed.choices[0]?.delta?.content || '';
             if (content) {
               currentMessage += content;
-              messageElement.textContent = currentMessage;
+              updateMessageContent(messageElement, currentMessage);
               if (isExtensionContextValid()) {
                 const chat = chats.find(c => c.id === currentChatId);
                 if (chat && chat.messages.length > 0) {

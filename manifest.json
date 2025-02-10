@@ -14,6 +14,9 @@
     "https://api.deepseek.com/*",
     "<all_urls>"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -56,6 +59,7 @@
     "resources": [
       "sidebar.html",
       "sidebar.js",
+      "markdown.js",
       "images/*"
     ],
     "matches": ["<all_urls>"]
