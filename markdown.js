@@ -9,23 +9,24 @@ const marked = {
   parse: function(text) {
     if (!text) return '';
     
-    // 首先转义 HTML
-    text = this.escapeHtml(text);
+    // 存储代码块，防止内部内容被解析
+    const codeBlocks = [];
+    text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (match, lang, code) => {
+      const placeholder = `__CODE_BLOCK_${codeBlocks.length}__`;
+      codeBlocks.push({ lang: lang || '代码', code: code.trim() });
+      return placeholder;
+    });
+    
+    // 存储行内代码
+    const inlineCode = [];
+    text = text.replace(/`([^`]+)`/g, (match, code) => {
+      const placeholder = `__INLINE_CODE_${inlineCode.length}__`;
+      inlineCode.push(code);
+      return placeholder;
+    });
     
     // 基本的 Markdown 解析规则
-    return text
-      // 代码块
-      .replace(/```(\w*)\n([\s\S]*?)```/g, (match, lang, code) => {
-        const language = lang || '代码';
-        return `<div class="code-container">
-          <div class="code-header">
-            <span>${language}</span>
-          </div>
-          <pre class="code-content"><code>${code.trim()}</code></pre>
-        </div>`;
-      })
-      // 行内代码
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
+    text = this.escapeHtml(text)
       // 标题
       .replace(/^### (.*$)/gm, '<h3>$1</h3>')
       .replace(/^## (.*$)/gm, '<h2>$1</h2>')
@@ -54,5 +55,25 @@ const marked = {
       .replace(/<p>\s*<\/p>/g, '')
       // 修复嵌套标签问题
       .replace(/<\/p><p>/g, '</p>\n<p>');
+
+    // 恢复代码块
+    codeBlocks.forEach((block, index) => {
+      const placeholder = `__CODE_BLOCK_${index}__`;
+      const replacement = `<div class="code-container">
+        <div class="code-header">
+          <span>${block.lang}</span>
+        </div>
+        <pre class="code-content"><code>${block.code}</code></pre>
+      </div>`;
+      text = text.replace(placeholder, replacement);
+    });
+
+    // 恢复行内代码
+    inlineCode.forEach((code, index) => {
+      const placeholder = `__INLINE_CODE_${index}__`;
+      text = text.replace(placeholder, `<code>${code}</code>`);
+    });
+
+    return text;
   }
 }; 

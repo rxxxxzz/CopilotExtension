@@ -259,7 +259,6 @@ function createMessageElement(text, type) {
   
   if (type === 'assistant') {
     try {
-      // 使用简化版的 Markdown 解析
       contentDiv.innerHTML = marked.parse(text);
     } catch (e) {
       console.error('Markdown 解析失败:', e);

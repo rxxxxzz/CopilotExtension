@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DeepSeek 翻译助手",
-  "version": "1.0",
+  "version": "1.0.1",
   "description": "使用 DeepSeek API 进行翻译和对话的 Chrome 插件",
   "permissions": [
     "storage",
