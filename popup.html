@@ -30,11 +30,30 @@
     button:hover {
       background-color: #1557b0;
     }
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
     .status {
-      color: #1a73e8;
+      padding: 8px;
+      border-radius: 4px;
       font-size: 14px;
-      margin-top: 8px;
       display: none;
+    }
+    .status.info {
+      display: block;
+      color: #1a73e8;
+      background-color: #e8f0fe;
+    }
+    .status.error {
+      display: block;
+      color: #d32f2f;
+      background-color: #fdecea;
+    }
+    .status.success {
+      display: block;
+      color: #388e3c;
+      background-color: #edf7ed;
     }
   </style>
 </head>

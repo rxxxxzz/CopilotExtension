@@ -334,6 +334,33 @@ function isExtensionContextValid() {
   }
 }
 
+// 检查网络连接状态
+async function checkNetworkConnection() {
+  try {
+    // 使用 navigator.onLine 快速检查网络状态
+    if (!navigator.onLine) {
+      return false;
+    }
+
+    // 尝试访问 DeepSeek API 的基本端点
+    const response = await fetch('https://api.deepseek.com/v1', {
+      method: 'HEAD',
+      cache: 'no-cache',
+      // 设置较短的超时时间
+      signal: AbortSignal.timeout(5000)
+    });
+    return true;  // 只要能访问到域名就认为网络正常
+  } catch (error) {
+    // 如果是超时或网络错误，但系统显示在线，仍然返回 true
+    if (navigator.onLine) {
+      console.log('DeepSeek Translator: API 连接检查失败，但网络在线:', error);
+      return true;
+    }
+    console.error('DeepSeek Translator: 网络连接检查失败:', error);
+    return false;
+  }
+}
+
 // 发送消息
 async function sendMessage() {
   const message = userInput.value.trim();
@@ -346,6 +373,12 @@ async function sendMessage() {
   try {
     if (!isExtensionContextValid()) {
       throw new Error('扩展上下文已失效，请刷新页面重试');
+    }
+
+    // 检查网络连接
+    const isNetworkConnected = await checkNetworkConnection();
+    if (!isNetworkConnected) {
+      throw new Error('网络连接不可用，请检查网络设置');
     }
 
     // 添加用户消息
@@ -383,110 +416,139 @@ async function sendMessage() {
 
     // 调用 DeepSeek API
     const controller = new AbortController();
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: messageHistory,
-        stream: true,
-        temperature: 0.7,
-        max_tokens: 2000
-      }),
-      signal: controller.signal
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`API 请求失败: ${response.status} - ${errorData.error?.message || '未知错误'}`);
-    }
-
-    // 处理流式响应
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
+    let response;
     try {
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      console.log('DeepSeek Translator: 开始调用 API');
+      response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: messageHistory,
+          stream: true,
+          temperature: 0.7,
+          max_tokens: 2000
+        }),
+        signal: controller.signal
+      });
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+      console.log('DeepSeek Translator: API 响应状态:', response.status);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('DeepSeek Translator: API 错误详情:', errorData);
+        
+        let errorMessage = '调用 API 失败';
+        if (response.status === 401) {
+          errorMessage = 'API Key 无效或已过期，请检查设置';
+        } else if (response.status === 429) {
+          errorMessage = 'API 调用次数已达到限制';
+        } else if (response.status >= 500) {
+          errorMessage = 'DeepSeek 服务器暂时不可用，请稍后重试';
+        }
+        
+        throw new Error(`${errorMessage}: ${response.status} - ${errorData.error?.message || '未知错误'}`);
+      }
 
-        for (const line of lines) {
-          if (line.trim() === '') continue;
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
+      // 处理流式响应
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
 
-            try {
+      try {
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.trim() === '') continue;
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices[0]?.delta?.content || '';
+                if (content) {
+                  currentMessage += content;
+                  updateMessageContent(messageElement, currentMessage);
+
+                  // 立即更新存储中的最后一条消息
+                  if (isExtensionContextValid()) {
+                    const chat = chats.find(c => c.id === currentChatId);
+                    if (chat && chat.messages.length > 0) {
+                      chat.messages[chat.messages.length - 1].content = currentMessage;
+                      // 使用 requestIdleCallback 或 setTimeout 来异步保存
+                      if (window.requestIdleCallback) {
+                        requestIdleCallback(() => saveChats());
+                      } else {
+                        setTimeout(() => saveChats(), 0);
+                      }
+                    }
+                  }
+
+                  // 使用 requestAnimationFrame 来优化滚动性能
+                  requestAnimationFrame(() => scrollToBottom());
+                }
+              } catch (e) {
+                console.error('解析响应数据失败:', e);
+              }
+            }
+          }
+        }
+        // 处理剩余的缓冲区
+        if (buffer.trim() && buffer.startsWith('data: ')) {
+          try {
+            const data = buffer.slice(6);
+            if (data !== '[DONE]') {
               const parsed = JSON.parse(data);
               const content = parsed.choices[0]?.delta?.content || '';
               if (content) {
                 currentMessage += content;
                 updateMessageContent(messageElement, currentMessage);
-
-                // 立即更新存储中的最后一条消息
                 if (isExtensionContextValid()) {
                   const chat = chats.find(c => c.id === currentChatId);
                   if (chat && chat.messages.length > 0) {
                     chat.messages[chat.messages.length - 1].content = currentMessage;
-                    // 使用 requestIdleCallback 或 setTimeout 来异步保存
-                    if (window.requestIdleCallback) {
-                      requestIdleCallback(() => saveChats());
-                    } else {
-                      setTimeout(() => saveChats(), 0);
-                    }
+                    await saveChats();
                   }
                 }
-
-                // 使用 requestAnimationFrame 来优化滚动性能
-                requestAnimationFrame(() => scrollToBottom());
+                scrollToBottom();
               }
-            } catch (e) {
-              console.error('解析响应数据失败:', e);
             }
+          } catch (e) {
+            console.error('解析最后的响应数据失败:', e);
           }
         }
-      }
-      // 处理剩余的缓冲区
-      if (buffer.trim() && buffer.startsWith('data: ')) {
-        try {
-          const data = buffer.slice(6);
-          if (data !== '[DONE]') {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices[0]?.delta?.content || '';
-            if (content) {
-              currentMessage += content;
-              updateMessageContent(messageElement, currentMessage);
-              if (isExtensionContextValid()) {
-                const chat = chats.find(c => c.id === currentChatId);
-                if (chat && chat.messages.length > 0) {
-                  chat.messages[chat.messages.length - 1].content = currentMessage;
-                  await saveChats();
-                }
-              }
-              scrollToBottom();
-            }
-          }
-        } catch (e) {
-          console.error('解析最后的响应数据失败:', e);
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          console.log('Stream reading aborted');
+        } else {
+          throw e;
         }
+      } finally {
+        reader.releaseLock();
+        controller.abort();
       }
-    } catch (e) {
-      if (e.name === 'AbortError') {
-        console.log('Stream reading aborted');
-      } else {
-        throw e;
+    } catch (error) {
+      console.error('API 调用错误:', error);
+      // 移除空的助手消息（如果存在）
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.type === 'assistant' && lastMessage.content === '') {
+        messages.pop();
+        if (isExtensionContextValid()) {
+          await saveChats();
+        }
+        displayMessages();
       }
-    } finally {
-      reader.releaseLock();
-      controller.abort();
+      await addMessage(`错误: ${error.message}`, 'error');
     }
   } catch (error) {
     console.error('API 调用错误:', error);

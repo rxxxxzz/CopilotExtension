@@ -25,6 +25,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // 验证 API Key
+  async function validateApiKey(apiKey) {
+    try {
+      const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: [{ role: 'user', content: 'test' }],
+          max_tokens: 1
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 401) {
+          throw new Error('API Key 无效');
+        } else if (response.status === 429) {
+          throw new Error('API 调用次数已达到限制');
+        }
+        throw new Error(errorData.error?.message || '验证失败');
+      }
+
+      return true;
+    } catch (error) {
+      console.error('DeepSeek Translator: API Key 验证失败:', error);
+      throw error;
+    }
+  }
+
   // 保存 API key
   saveButton.addEventListener('click', async () => {
     const apiKey = apiKeyInput.value.trim();
@@ -35,6 +68,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
+      // 验证 API Key
+      showStatus('正在验证 API Key...', 'info');
+      await validateApiKey(apiKey);
+      
       // 保存 API Key
       await new Promise((resolve, reject) => {
         chrome.storage.sync.set({ deepseekApiKey: apiKey }, () => {
@@ -108,13 +145,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function showStatus(message, type) {
     statusDiv.textContent = message;
-    statusDiv.style.display = 'block';
-    statusDiv.style.color = type === 'error' ? '#d32f2f' : '#1a73e8';
+    statusDiv.className = 'status ' + type;
     
     if (type === 'success') {
       setTimeout(() => {
-        statusDiv.style.display = 'none';
+        statusDiv.className = 'status';
       }, 2000);
     }
+    
+    // 在验证过程中禁用保存按钮
+    saveButton.disabled = type === 'info';
   }
 }); 
