@@ -186,16 +186,6 @@ function switchToChat(chatId) {
           }
         } else {
           updateMessageStatus(messageDiv, lastMessage.status.text, lastMessage.status.type);
-          
-          // 如果是成功状态，2秒后隐藏状态栏
-          if (lastMessage.status.type === 'success') {
-            setTimeout(() => {
-              const statusArea = messageDiv.querySelector('.message-status-area');
-              if (statusArea) {
-                statusArea.remove();
-              }
-            }, 2000);
-          }
         }
       }
     }
@@ -322,6 +312,20 @@ function displayMessages() {
   messages.forEach(message => {
     const messageDiv = createMessageElement(message.content, message.type);
     messagesContainer.appendChild(messageDiv);
+    
+    // 如果消息有状态，显示状态
+    if (message.type === 'assistant') {
+      // 即使没有状态也创建状态区域，以保持布局一致性
+      const statusArea = messageDiv.querySelector('.message-status-area');
+      if (statusArea && message.status) {
+        // 如果是正在生成中的消息，设置加载状态
+        if (message.status.type === 'info' && message.status.loadingStartTime) {
+          loadingStartTime = message.status.loadingStartTime;
+          loadingMessageElement = messageDiv;
+        }
+        updateMessageStatus(messageDiv, message.status.text, message.status.type);
+      }
+    }
   });
   scrollToBottom();
 }
@@ -352,7 +356,7 @@ function createMessageElement(text, type) {
   
   messageDiv.appendChild(contentDiv);
   
-  // 为助手消息添加状态区域
+  // 为助手消息添加状态区域，即使没有状态也添加
   if (type === 'assistant') {
     const statusArea = document.createElement('div');
     statusArea.className = 'message-status-area';
@@ -376,6 +380,37 @@ function updateMessageContent(messageElement, text) {
     }
   } else {
     contentDiv.textContent = text;
+  }
+}
+
+// 更新流式回复内容
+async function updateStreamContent(chatId, content, status = null) {
+  const chat = chats.find(c => c.id === chatId);
+  if (chat && chat.messages.length > 0) {
+    const lastMessage = chat.messages[chat.messages.length - 1];
+    if (lastMessage && lastMessage.type === 'assistant') {
+      // 更新消息内容
+      lastMessage.content = content;
+      
+      // 如果提供了状态，也更新状态
+      if (status) {
+        lastMessage.status = status;
+      }
+      
+      // 如果是当前对话，更新UI
+      if (chat.id === currentChatId) {
+        const messageDiv = messagesContainer.lastElementChild;
+        if (messageDiv) {
+          updateMessageContent(messageDiv, content);
+          if (status) {
+            updateMessageStatus(messageDiv, status.text, status.type);
+          }
+        }
+      }
+      
+      // 保存到存储以同步到其他标签页
+      await saveChats();
+    }
   }
 }
 
@@ -419,15 +454,10 @@ function updateMessageStatus(messageElement, status, type = 'info') {
       const minutes = Math.floor(seconds / 60);
       timer.textContent = `已等待: ${minutes}分${seconds % 60}秒`;
       
-      if (currentController && elapsed < MAX_WAIT_TIME) {
+      if (elapsed < MAX_WAIT_TIME) {
         requestAnimationFrame(updateTimer);
-      } else if (elapsed >= MAX_WAIT_TIME) {
-        if (currentController) {
-          currentController.abort();
-          currentController = null;
-          updateMessageStatus(messageElement, '等待超时，请重试', 'error');
-          enableInput();
-        }
+      } else {
+        cancelChat(currentChatId, '等待超时，请重试');
       }
     };
     updateTimer();
@@ -439,18 +469,90 @@ function updateMessageStatus(messageElement, status, type = 'info') {
     cancelButton.className = 'cancel-button';
     cancelButton.textContent = '取消对话';
     cancelButton.onclick = () => {
-      if (currentController) {
-        console.log('DeepSeek Translator: 用户取消了对话');
-        currentController.abort();
-        currentController = null;
-        updateMessageStatus(messageElement, '用户取消了对话', 'warning');
-        enableInput();
-      }
+      console.log('DeepSeek Translator: 用户取消了对话');
+      cancelChat(currentChatId, '用户取消了对话');
     };
     statusContainer.appendChild(cancelButton);
   }
 
   statusArea.appendChild(statusContainer);
+}
+
+// 取消对话
+async function cancelChat(chatId, reason) {
+  // 如果当前标签页有控制器，中止它
+  if (currentController) {
+    currentController.abort();
+    currentController = null;
+  }
+  
+  // 保存取消状态到存储
+  await chrome.storage.local.set({
+    cancelledChat: {
+      chatId,
+      reason,
+      timestamp: Date.now()
+    }
+  });
+  
+  // 立即更新本地状态
+  const chat = chats.find(c => c.id === chatId);
+  if (chat) {
+    const lastMessage = chat.messages[chat.messages.length - 1];
+    if (lastMessage && lastMessage.type === 'assistant' && lastMessage.status && lastMessage.status.type === 'info') {
+      lastMessage.status = {
+        type: 'warning',
+        text: reason,
+        timestamp: Date.now()
+      };
+      
+      // 如果是当前对话，更新UI
+      if (chat.id === currentChatId) {
+        const messageDiv = messagesContainer.lastElementChild;
+        if (messageDiv) {
+          updateMessageStatus(messageDiv, reason, 'warning');
+        }
+      }
+      
+      await saveChats();
+    }
+  }
+  
+  // 启用输入
+  enableInput();
+}
+
+// 处理对话取消
+async function handleChatCancellation(cancelInfo) {
+  const chat = chats.find(c => c.id === cancelInfo.chatId);
+  if (chat) {
+    const lastMessage = chat.messages[chat.messages.length - 1];
+    if (lastMessage && lastMessage.type === 'assistant' && lastMessage.status && lastMessage.status.type === 'info') {
+      // 更新消息状态
+      lastMessage.status = {
+        type: 'warning',
+        text: cancelInfo.reason,
+        timestamp: cancelInfo.timestamp
+      };
+      
+      // 如果是当前对话，更新UI
+      if (chat.id === currentChatId) {
+        const messageDiv = messagesContainer.lastElementChild;
+        if (messageDiv) {
+          updateMessageStatus(messageDiv, cancelInfo.reason, 'warning');
+        }
+        if (currentController) {
+          currentController.abort();
+          currentController = null;
+        }
+      }
+      
+      await saveChats();
+      
+      // 启用输入
+      enableInput();
+    }
+  }
 }
 
 // 添加消息到界面和存储
@@ -594,22 +696,16 @@ async function sendMessage() {
     
     // 更新消息状态
     const updateStatus = async (status, type = 'info') => {
-      updateMessageStatus(messageElement, status, type);
+      const statusData = {
+        type,
+        text: status,
+        timestamp: Date.now(),
+        keepAliveCount,
+        lastKeepAliveTime,
+        loadingStartTime: type === 'info' ? loadingStartTime : null
+      };
       
-      // 同步状态到存储
-      const chat = chats.find(c => c.id === currentChatId);
-      if (chat && chat.messages.length > 0) {
-        const lastMessage = chat.messages[chat.messages.length - 1];
-        lastMessage.status = {
-          type,
-          text: status,
-          timestamp: Date.now(),
-          keepAliveCount,
-          lastKeepAliveTime,
-          loadingStartTime: type === 'info' ? loadingStartTime : null
-        };
-        await saveChats();
-      }
+      await updateStreamContent(currentChatId, messages[messages.length - 1].content, statusData);
     };
     
     await updateStatus('正在等待 DeepSeek 服务器响应...');
@@ -703,14 +799,8 @@ async function sendMessage() {
                   }
                   
                   currentMessage += content;
-                  updateMessageContent(messageElement, currentMessage);
-
-                  // 实时同步到存储
-                  const chat = chats.find(c => c.id === currentChatId);
-                  if (chat && chat.messages.length > 0) {
-                    chat.messages[chat.messages.length - 1].content = currentMessage;
-                    await saveChats();
-                  }
+                  // 更新所有标签页的内容
+                  await updateStreamContent(currentChatId, currentMessage);
                 }
               } catch (e) {
                 console.error('解析响应数据失败:', e);
@@ -744,13 +834,6 @@ async function sendMessage() {
       if (hasReceivedContent) {
         // 更新最终状态
         await updateStatus('回复完成', 'success');
-        
-        setTimeout(() => {
-          const statusArea = messageElement.querySelector('.message-status-area');
-          if (statusArea) {
-            statusArea.remove();
-          }
-        }, 2000);
       } else {
         throw new Error('服务器没有返回有效内容');
       }
@@ -788,51 +871,35 @@ closeButton.addEventListener('click', closeSidebar);
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (!isExtensionContextValid()) return;
   
-  if (namespace === 'local' && changes.chats) {
-    const newChats = changes.chats.newValue;
-    const newCurrentChatId = changes.currentChatId?.newValue;
-    const newTabId = changes.tabId?.newValue;
-    
-    // 更新本地数据
-    if (JSON.stringify(chats) !== JSON.stringify(newChats)) {
-      chats = newChats;
-      
-      // 如果是当前对话，更新消息显示
-      const currentChat = chats.find(c => c.id === currentChatId);
-      if (currentChat) {
-        messages = currentChat.messages;
-        
-        // 重新显示所有消息，保持状态
-        messagesContainer.innerHTML = '';
-        messages.forEach(message => {
-          const messageDiv = createMessageElement(message.content, message.type);
-          messagesContainer.appendChild(messageDiv);
-          
-          // 如果消息有状态，显示状态
-          if (message.status && message.type === 'assistant') {
-            // 如果消息正在生成中，显示加载状态
-            if (message.status.type === 'info' && message.status.loadingStartTime) {
-              loadingStartTime = message.status.loadingStartTime;
-              loadingMessageElement = messageDiv;
-            }
-            updateMessageStatus(messageDiv, message.status.text, message.status.type);
-            
-            // 如果是成功状态，2秒后隐藏状态栏
-            if (message.status.type === 'success') {
-              setTimeout(() => {
-                const statusArea = messageDiv.querySelector('.message-status-area');
-                if (statusArea) {
-                  statusArea.remove();
-                }
-              }, 2000);
-            }
-          }
-        });
-        scrollToBottom();
+  if (namespace === 'local') {
+    // 处理对话取消
+    if (changes.cancelledChat) {
+      const cancelInfo = changes.cancelledChat.newValue;
+      if (cancelInfo) {
+        handleChatCancellation(cancelInfo);
       }
+    }
+    
+    // 处理对话更新
+    if (changes.chats) {
+      const newChats = changes.chats.newValue;
+      const newCurrentChatId = changes.currentChatId?.newValue;
+      const newTabId = changes.tabId?.newValue;
       
-      // 更新对话列表
-      updateChatList();
+      // 更新本地数据
+      if (JSON.stringify(chats) !== JSON.stringify(newChats)) {
+        chats = newChats;
+        
+        // 如果是当前对话，更新消息显示
+        const currentChat = chats.find(c => c.id === currentChatId);
+        if (currentChat) {
+          messages = currentChat.messages;
+          displayMessages(); // 使用改进后的 displayMessages 函数
+        }
+        
+        // 更新对话列表
+        updateChatList();
+      }
     }
   }
 });
