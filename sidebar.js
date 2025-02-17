@@ -162,6 +162,44 @@ function switchToChat(chatId) {
   if (chat) {
     messages = chat.messages;
     displayMessages();
+    
+    // 检查是否有正在生成的消息
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage && lastMessage.type === 'assistant' && lastMessage.status) {
+      const messageDiv = messagesContainer.lastElementChild;
+      if (messageDiv) {
+        if (lastMessage.status.type === 'info' && lastMessage.status.loadingStartTime) {
+          loadingStartTime = lastMessage.status.loadingStartTime;
+          loadingMessageElement = messageDiv;
+          
+          // 检查是否已经超时
+          if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
+            lastMessage.status = {
+              type: 'error',
+              text: '等待超时，请重试',
+              timestamp: Date.now()
+            };
+            updateMessageStatus(messageDiv, lastMessage.status.text, lastMessage.status.type);
+            saveChats();
+          } else {
+            updateMessageStatus(messageDiv, lastMessage.status.text, lastMessage.status.type);
+          }
+        } else {
+          updateMessageStatus(messageDiv, lastMessage.status.text, lastMessage.status.type);
+          
+          // 如果是成功状态，2秒后隐藏状态栏
+          if (lastMessage.status.type === 'success') {
+            setTimeout(() => {
+              const statusArea = messageDiv.querySelector('.message-status-area');
+              if (statusArea) {
+                statusArea.remove();
+              }
+            }, 2000);
+          }
+        }
+      }
+    }
+    
     updateChatList();
   }
 }
@@ -207,6 +245,26 @@ function loadChats() {
         currentChatId = result.currentChatId || chats[0].id;
       } else {
         currentChatId = chats[0].id;
+      }
+      
+      // 查找当前对话中是否有正在生成的消息
+      const currentChat = chats.find(c => c.id === currentChatId);
+      if (currentChat) {
+        const lastMessage = currentChat.messages[currentChat.messages.length - 1];
+        if (lastMessage && lastMessage.type === 'assistant' && lastMessage.status) {
+          if (lastMessage.status.type === 'info' && lastMessage.status.loadingStartTime) {
+            loadingStartTime = lastMessage.status.loadingStartTime;
+            // 检查是否已经超时
+            if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
+              lastMessage.status = {
+                type: 'error',
+                text: '等待超时，请重试',
+                timestamp: Date.now()
+              };
+              saveChats();
+            }
+          }
+        }
       }
     } else {
       createNewChat();
@@ -401,8 +459,23 @@ async function addMessage(text, type) {
   messagesContainer.appendChild(messageDiv);
   scrollToBottom();
   
-  const message = { content: text, type: type, timestamp: Date.now() };
+  const message = { 
+    content: text, 
+    type: type, 
+    timestamp: Date.now(),
+    status: type === 'assistant' ? {
+      type: 'info',
+      text: '正在准备回复...',
+      timestamp: Date.now()
+    } : null
+  };
+  
   messages.push(message);
+  
+  // 如果是助手消息，立即显示状态栏
+  if (type === 'assistant') {
+    updateMessageStatus(messageDiv, message.status.text, message.status.type);
+  }
   
   // 更新当前对话
   const chat = chats.find(c => c.id === currentChatId);
@@ -518,7 +591,28 @@ async function sendMessage() {
     const messageElement = await addMessage('', 'assistant');
     loadingMessageElement = messageElement;
     loadingStartTime = Date.now();
-    updateMessageStatus(messageElement, '正在等待 DeepSeek 服务器响应...');
+    
+    // 更新消息状态
+    const updateStatus = async (status, type = 'info') => {
+      updateMessageStatus(messageElement, status, type);
+      
+      // 同步状态到存储
+      const chat = chats.find(c => c.id === currentChatId);
+      if (chat && chat.messages.length > 0) {
+        const lastMessage = chat.messages[chat.messages.length - 1];
+        lastMessage.status = {
+          type,
+          text: status,
+          timestamp: Date.now(),
+          keepAliveCount,
+          lastKeepAliveTime,
+          loadingStartTime: type === 'info' ? loadingStartTime : null
+        };
+        await saveChats();
+      }
+    };
+    
+    await updateStatus('正在等待 DeepSeek 服务器响应...');
 
     let currentMessage = '';
     console.log('DeepSeek Translator: 开始新的对话');
@@ -528,7 +622,7 @@ async function sendMessage() {
     
     try {
       console.log('DeepSeek Translator: 正在连接服务器...');
-      updateMessageStatus(messageElement, '正在连接服务器...');
+      await updateStatus('正在连接服务器...');
       
       const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
         method: 'POST',
@@ -547,7 +641,7 @@ async function sendMessage() {
       });
 
       console.log('DeepSeek Translator: 服务器响应状态:', response.status);
-      updateMessageStatus(messageElement, '已连接到服务器，等待响应...');
+      await updateStatus('已连接到服务器，等待响应...');
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -587,7 +681,7 @@ async function sendMessage() {
               keepAliveCount++;
               lastKeepAliveTime = Date.now();
               console.log(`DeepSeek Translator: 收到第 ${keepAliveCount} 个保活信号`);
-              updateMessageStatus(messageElement, `正在等待服务器响应...（已收到 ${keepAliveCount} 个保活信号）`);
+              await updateStatus(`正在等待服务器响应...（已收到 ${keepAliveCount} 个保活信号）`);
               continue;
             }
 
@@ -605,30 +699,17 @@ async function sendMessage() {
                   if (!hasReceivedContent) {
                     console.log('DeepSeek Translator: 开始接收内容');
                     hasReceivedContent = true;
-                    updateMessageStatus(messageElement, '正在生成回复...');
+                    await updateStatus('正在生成回复...');
                   }
                   
                   currentMessage += content;
                   updateMessageContent(messageElement, currentMessage);
 
-                  // 实时同步到存储，包含生成状态
-                  if (isExtensionContextValid()) {
-                    const chat = chats.find(c => c.id === currentChatId);
-                    if (chat && chat.messages.length > 0) {
-                      chat.messages[chat.messages.length - 1] = {
-                        content: currentMessage,
-                        type: 'assistant',
-                        timestamp: Date.now(),
-                        status: {
-                          type: 'info',
-                          text: '正在生成回复...',
-                          keepAliveCount,
-                          lastKeepAliveTime,
-                          loadingStartTime
-                        }
-                      };
-                      await saveChats();
-                    }
+                  // 实时同步到存储
+                  const chat = chats.find(c => c.id === currentChatId);
+                  if (chat && chat.messages.length > 0) {
+                    chat.messages[chat.messages.length - 1].content = currentMessage;
+                    await saveChats();
                   }
                 }
               } catch (e) {
@@ -639,11 +720,13 @@ async function sendMessage() {
 
           // 检查是否超过最大等待时间
           if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
+            await updateStatus('等待超时，请重试', 'error');
             throw new Error('等待超时，请重试');
           }
 
           // 检查最后一次 keep-alive 是否超过 30 秒
           if (lastKeepAliveTime && Date.now() - lastKeepAliveTime > 30000) {
+            await updateStatus('服务器响应超时，请重试', 'error');
             throw new Error('服务器响应超时，请重试');
           }
         }
@@ -660,27 +743,7 @@ async function sendMessage() {
       
       if (hasReceivedContent) {
         // 更新最终状态
-        const finalStatus = {
-          type: 'success',
-          text: '回复完成',
-          timestamp: Date.now()
-        };
-        
-        updateMessageStatus(messageElement, finalStatus.text, finalStatus.type);
-        
-        // 同步最终状态到存储
-        if (isExtensionContextValid()) {
-          const chat = chats.find(c => c.id === currentChatId);
-          if (chat && chat.messages.length > 0) {
-            chat.messages[chat.messages.length - 1] = {
-              content: currentMessage,
-              type: 'assistant',
-              timestamp: Date.now(),
-              status: finalStatus
-            };
-            await saveChats();
-          }
-        }
+        await updateStatus('回复完成', 'success');
         
         setTimeout(() => {
           const statusArea = messageElement.querySelector('.message-status-area');
@@ -699,25 +762,10 @@ async function sendMessage() {
     }
   } catch (error) {
     console.error('DeepSeek Translator: 对话错误:', error);
-    const errorStatus = {
-      type: 'error',
-      text: error.message,
-      timestamp: Date.now()
-    };
-    
     if (loadingMessageElement) {
-      updateMessageStatus(loadingMessageElement, errorStatus.text, errorStatus.type);
+      await updateStatus(error.message, 'error');
     } else {
       await addMessage(`错误: ${error.message}`, 'error');
-    }
-    
-    // 同步错误状态到存储
-    if (isExtensionContextValid()) {
-      const chat = chats.find(c => c.id === currentChatId);
-      if (chat && chat.messages.length > 0) {
-        chat.messages[chat.messages.length - 1].status = errorStatus;
-        await saveChats();
-      }
     }
   } finally {
     enableInput();
@@ -762,7 +810,22 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
           
           // 如果消息有状态，显示状态
           if (message.status && message.type === 'assistant') {
+            // 如果消息正在生成中，显示加载状态
+            if (message.status.type === 'info' && message.status.loadingStartTime) {
+              loadingStartTime = message.status.loadingStartTime;
+              loadingMessageElement = messageDiv;
+            }
             updateMessageStatus(messageDiv, message.status.text, message.status.type);
+            
+            // 如果是成功状态，2秒后隐藏状态栏
+            if (message.status.type === 'success') {
+              setTimeout(() => {
+                const statusArea = messageDiv.querySelector('.message-status-area');
+                if (statusArea) {
+                  statusArea.remove();
+                }
+              }, 2000);
+            }
           }
         });
         scrollToBottom();
