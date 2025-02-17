@@ -1,6 +1,30 @@
 let chats = [];
 let currentChatId = null;
 let messages = [];
+let currentController = null;
+let loadingMessageElement = null;
+let loadingStartTime = 0;
+const MAX_WAIT_TIME = 60000; // 最大等待时间：60秒
+
+// 禁用输入
+function disableInput() {
+  if (userInput && sendButton) {
+    userInput.disabled = true;
+    sendButton.disabled = true;
+    userInput.style.cursor = 'not-allowed';
+    sendButton.style.cursor = 'not-allowed';
+  }
+}
+
+// 启用输入
+function enableInput() {
+  if (userInput && sendButton) {
+    userInput.disabled = false;
+    sendButton.disabled = false;
+    userInput.style.cursor = 'text';
+    sendButton.style.cursor = 'pointer';
+  }
+}
 
 const messagesContainer = document.getElementById('messages');
 const userInput = document.getElementById('userInput');
@@ -259,17 +283,24 @@ function createMessageElement(text, type) {
   
   if (type === 'assistant') {
     try {
-      contentDiv.innerHTML = marked.parse(text);
+      contentDiv.innerHTML = marked.parse(text || '');
     } catch (e) {
       console.error('Markdown 解析失败:', e);
-      contentDiv.textContent = text;
+      contentDiv.textContent = text || '';
     }
   } else {
-    // 用户消息保持纯文本
     contentDiv.textContent = text;
   }
   
   messageDiv.appendChild(contentDiv);
+  
+  // 为助手消息添加状态区域
+  if (type === 'assistant') {
+    const statusArea = document.createElement('div');
+    statusArea.className = 'message-status-area';
+    messageDiv.appendChild(statusArea);
+  }
+  
   return messageDiv;
 }
 
@@ -280,14 +311,88 @@ function updateMessageContent(messageElement, text) {
 
   if (messageElement.classList.contains('assistant-message')) {
     try {
-      contentDiv.innerHTML = marked.parse(text);
+      contentDiv.innerHTML = marked.parse(text || '');
     } catch (e) {
       console.error('Markdown 解析失败:', e);
-      contentDiv.textContent = text;
+      contentDiv.textContent = text || '';
     }
   } else {
     contentDiv.textContent = text;
   }
+}
+
+// 更新消息状态
+function updateMessageStatus(messageElement, status, type = 'info') {
+  const statusArea = messageElement.querySelector('.message-status-area');
+  if (!statusArea) return;
+
+  // 清除现有状态
+  statusArea.innerHTML = '';
+
+  // 创建状态容器
+  const statusContainer = document.createElement('div');
+  statusContainer.className = `status-container ${type}`;
+
+  // 添加加载指示器（仅在 info 类型时）
+  if (type === 'info') {
+    const loader = document.createElement('div');
+    loader.className = 'status-loader';
+    statusContainer.appendChild(loader);
+  }
+
+  // 添加状态文本
+  const statusText = document.createElement('span');
+  statusText.className = 'status-text';
+  statusText.textContent = status;
+  statusContainer.appendChild(statusText);
+
+  // 添加等待时间（仅在 info 类型时）
+  if (type === 'info') {
+    const timer = document.createElement('span');
+    timer.className = 'status-timer';
+    statusContainer.appendChild(timer);
+
+    // 更新等待时间
+    const updateTimer = () => {
+      if (!statusArea.contains(timer)) return;
+      
+      const elapsed = Date.now() - loadingStartTime;
+      const seconds = Math.floor(elapsed / 1000);
+      const minutes = Math.floor(seconds / 60);
+      timer.textContent = `已等待: ${minutes}分${seconds % 60}秒`;
+      
+      if (currentController && elapsed < MAX_WAIT_TIME) {
+        requestAnimationFrame(updateTimer);
+      } else if (elapsed >= MAX_WAIT_TIME) {
+        if (currentController) {
+          currentController.abort();
+          currentController = null;
+          updateMessageStatus(messageElement, '等待超时，请重试', 'error');
+          enableInput();
+        }
+      }
+    };
+    updateTimer();
+  }
+
+  // 添加取消按钮（仅在 info 类型时）
+  if (type === 'info') {
+    const cancelButton = document.createElement('button');
+    cancelButton.className = 'cancel-button';
+    cancelButton.textContent = '取消对话';
+    cancelButton.onclick = () => {
+      if (currentController) {
+        console.log('DeepSeek Translator: 用户取消了对话');
+        currentController.abort();
+        currentController = null;
+        updateMessageStatus(messageElement, '用户取消了对话', 'warning');
+        enableInput();
+      }
+    };
+    statusContainer.appendChild(cancelButton);
+  }
+
+  statusArea.appendChild(statusContainer);
 }
 
 // 添加消息到界面和存储
@@ -308,7 +413,6 @@ async function addMessage(text, type) {
       updateCurrentChatTitle(text);
     }
     await saveChats();
-    await checkStorageSize();
   }
   
   return messageDiv;
@@ -364,11 +468,11 @@ async function checkNetworkConnection() {
 // 发送消息
 async function sendMessage() {
   const message = userInput.value.trim();
-  if (!message) return;
+  if (!message || userInput.disabled) return;
 
-  // 禁用输入和发送按钮
-  userInput.disabled = true;
-  sendButton.disabled = true;
+  disableInput();
+  let keepAliveCount = 0;
+  let lastKeepAliveTime = 0;
 
   try {
     if (!isExtensionContextValid()) {
@@ -412,14 +516,21 @@ async function sendMessage() {
 
     // 创建一个空的助手消息元素
     const messageElement = await addMessage('', 'assistant');
-    let currentMessage = '';
+    loadingMessageElement = messageElement;
+    loadingStartTime = Date.now();
+    updateMessageStatus(messageElement, '正在等待 DeepSeek 服务器响应...');
 
-    // 调用 DeepSeek API
-    const controller = new AbortController();
-    let response;
+    let currentMessage = '';
+    console.log('DeepSeek Translator: 开始新的对话');
+
+    // 创建新的 AbortController
+    currentController = new AbortController();
+    
     try {
-      console.log('DeepSeek Translator: 开始调用 API');
-      response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      console.log('DeepSeek Translator: 正在连接服务器...');
+      updateMessageStatus(messageElement, '正在连接服务器...');
+      
+      const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -432,10 +543,11 @@ async function sendMessage() {
           temperature: 0.7,
           max_tokens: 2000
         }),
-        signal: controller.signal
+        signal: currentController.signal
       });
 
-      console.log('DeepSeek Translator: API 响应状态:', response.status);
+      console.log('DeepSeek Translator: 服务器响应状态:', response.status);
+      updateMessageStatus(messageElement, '已连接到服务器，等待响应...');
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -453,12 +565,12 @@ async function sendMessage() {
         throw new Error(`${errorMessage}: ${response.status} - ${errorData.error?.message || '未知错误'}`);
       }
 
-      // 处理流式响应
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let buffer = '';
+      let hasReceivedContent = false;
 
       try {
-        let buffer = '';
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -469,104 +581,146 @@ async function sendMessage() {
 
           for (const line of lines) {
             if (line.trim() === '') continue;
+            
+            // 处理 keep-alive
+            if (line.trim() === ': keep-alive') {
+              keepAliveCount++;
+              lastKeepAliveTime = Date.now();
+              console.log(`DeepSeek Translator: 收到第 ${keepAliveCount} 个保活信号`);
+              updateMessageStatus(messageElement, `正在等待服务器响应...（已收到 ${keepAliveCount} 个保活信号）`);
+              continue;
+            }
+
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
-              if (data === '[DONE]') continue;
+              if (data === '[DONE]') {
+                console.log('DeepSeek Translator: 接收完成');
+                continue;
+              }
 
               try {
                 const parsed = JSON.parse(data);
                 const content = parsed.choices[0]?.delta?.content || '';
                 if (content) {
+                  if (!hasReceivedContent) {
+                    console.log('DeepSeek Translator: 开始接收内容');
+                    hasReceivedContent = true;
+                    updateMessageStatus(messageElement, '正在生成回复...');
+                  }
+                  
                   currentMessage += content;
                   updateMessageContent(messageElement, currentMessage);
 
-                  // 立即更新存储中的最后一条消息
+                  // 实时同步到存储，包含生成状态
                   if (isExtensionContextValid()) {
                     const chat = chats.find(c => c.id === currentChatId);
                     if (chat && chat.messages.length > 0) {
-                      chat.messages[chat.messages.length - 1].content = currentMessage;
-                      // 使用 requestIdleCallback 或 setTimeout 来异步保存
-                      if (window.requestIdleCallback) {
-                        requestIdleCallback(() => saveChats());
-                      } else {
-                        setTimeout(() => saveChats(), 0);
-                      }
+                      chat.messages[chat.messages.length - 1] = {
+                        content: currentMessage,
+                        type: 'assistant',
+                        timestamp: Date.now(),
+                        status: {
+                          type: 'info',
+                          text: '正在生成回复...',
+                          keepAliveCount,
+                          lastKeepAliveTime,
+                          loadingStartTime
+                        }
+                      };
+                      await saveChats();
                     }
                   }
-
-                  // 使用 requestAnimationFrame 来优化滚动性能
-                  requestAnimationFrame(() => scrollToBottom());
                 }
               } catch (e) {
                 console.error('解析响应数据失败:', e);
               }
             }
           }
-        }
-        // 处理剩余的缓冲区
-        if (buffer.trim() && buffer.startsWith('data: ')) {
-          try {
-            const data = buffer.slice(6);
-            if (data !== '[DONE]') {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices[0]?.delta?.content || '';
-              if (content) {
-                currentMessage += content;
-                updateMessageContent(messageElement, currentMessage);
-                if (isExtensionContextValid()) {
-                  const chat = chats.find(c => c.id === currentChatId);
-                  if (chat && chat.messages.length > 0) {
-                    chat.messages[chat.messages.length - 1].content = currentMessage;
-                    await saveChats();
-                  }
-                }
-                scrollToBottom();
-              }
-            }
-          } catch (e) {
-            console.error('解析最后的响应数据失败:', e);
+
+          // 检查是否超过最大等待时间
+          if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
+            throw new Error('等待超时，请重试');
+          }
+
+          // 检查最后一次 keep-alive 是否超过 30 秒
+          if (lastKeepAliveTime && Date.now() - lastKeepAliveTime > 30000) {
+            throw new Error('服务器响应超时，请重试');
           }
         }
       } catch (e) {
         if (e.name === 'AbortError') {
-          console.log('Stream reading aborted');
+          console.log('DeepSeek Translator: 流读取被中断');
+          throw new Error('对话已取消');
         } else {
           throw e;
         }
       } finally {
         reader.releaseLock();
-        controller.abort();
       }
-    } catch (error) {
-      console.error('API 调用错误:', error);
-      // 移除空的助手消息（如果存在）
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.type === 'assistant' && lastMessage.content === '') {
-        messages.pop();
+      
+      if (hasReceivedContent) {
+        // 更新最终状态
+        const finalStatus = {
+          type: 'success',
+          text: '回复完成',
+          timestamp: Date.now()
+        };
+        
+        updateMessageStatus(messageElement, finalStatus.text, finalStatus.type);
+        
+        // 同步最终状态到存储
         if (isExtensionContextValid()) {
-          await saveChats();
+          const chat = chats.find(c => c.id === currentChatId);
+          if (chat && chat.messages.length > 0) {
+            chat.messages[chat.messages.length - 1] = {
+              content: currentMessage,
+              type: 'assistant',
+              timestamp: Date.now(),
+              status: finalStatus
+            };
+            await saveChats();
+          }
         }
-        displayMessages();
+        
+        setTimeout(() => {
+          const statusArea = messageElement.querySelector('.message-status-area');
+          if (statusArea) {
+            statusArea.remove();
+          }
+        }, 2000);
+      } else {
+        throw new Error('服务器没有返回有效内容');
       }
-      await addMessage(`错误: ${error.message}`, 'error');
+      
+    } catch (error) {
+      throw error;
+    } finally {
+      currentController = null;
     }
   } catch (error) {
-    console.error('API 调用错误:', error);
-    // 移除空的助手消息（如果存在）
-    const lastMessage = messages[messages.length - 1];
-    if (lastMessage && lastMessage.type === 'assistant' && lastMessage.content === '') {
-      messages.pop();
-      if (isExtensionContextValid()) {
+    console.error('DeepSeek Translator: 对话错误:', error);
+    const errorStatus = {
+      type: 'error',
+      text: error.message,
+      timestamp: Date.now()
+    };
+    
+    if (loadingMessageElement) {
+      updateMessageStatus(loadingMessageElement, errorStatus.text, errorStatus.type);
+    } else {
+      await addMessage(`错误: ${error.message}`, 'error');
+    }
+    
+    // 同步错误状态到存储
+    if (isExtensionContextValid()) {
+      const chat = chats.find(c => c.id === currentChatId);
+      if (chat && chat.messages.length > 0) {
+        chat.messages[chat.messages.length - 1].status = errorStatus;
         await saveChats();
       }
-      displayMessages();
     }
-    await addMessage(`错误: ${error.message}`, 'error');
   } finally {
-    // 重新启用输入和发送按钮
-    userInput.disabled = false;
-    sendButton.disabled = false;
-    userInput.focus();
+    enableInput();
   }
 }
 
@@ -591,21 +745,31 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     const newCurrentChatId = changes.currentChatId?.newValue;
     const newTabId = changes.tabId?.newValue;
     
-    // 只有当存储的标签页ID与当前标签页ID匹配时，才更新界面
-    if (newTabId === window.tabId) {
-      if (JSON.stringify(chats) !== JSON.stringify(newChats)) {
-        chats = newChats;
-        if (newCurrentChatId && newCurrentChatId !== currentChatId) {
-          switchToChat(newCurrentChatId);
-        } else {
-          const currentChat = chats.find(c => c.id === currentChatId);
-          if (currentChat) {
-            messages = currentChat.messages;
-            displayMessages();
+    // 更新本地数据
+    if (JSON.stringify(chats) !== JSON.stringify(newChats)) {
+      chats = newChats;
+      
+      // 如果是当前对话，更新消息显示
+      const currentChat = chats.find(c => c.id === currentChatId);
+      if (currentChat) {
+        messages = currentChat.messages;
+        
+        // 重新显示所有消息，保持状态
+        messagesContainer.innerHTML = '';
+        messages.forEach(message => {
+          const messageDiv = createMessageElement(message.content, message.type);
+          messagesContainer.appendChild(messageDiv);
+          
+          // 如果消息有状态，显示状态
+          if (message.status && message.type === 'assistant') {
+            updateMessageStatus(messageDiv, message.status.text, message.status.type);
           }
-          updateChatList();
-        }
+        });
+        scrollToBottom();
       }
+      
+      // 更新对话列表
+      updateChatList();
     }
   }
 });
@@ -650,6 +814,83 @@ style.textContent = `
   
   .chat-item:hover .delete-chat-button {
     visibility: visible;
+  }
+
+  .message-status-area {
+    margin-top: 8px;
+    padding: 8px;
+  }
+
+  .status-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .status-container.info {
+    background: rgba(52, 152, 219, 0.1);
+    color: #2980b9;
+  }
+
+  .status-container.error {
+    background: rgba(231, 76, 60, 0.1);
+    color: #e74c3c;
+  }
+
+  .status-container.warning {
+    background: rgba(241, 196, 15, 0.1);
+    color: #f39c12;
+  }
+
+  .status-container.success {
+    background: rgba(46, 204, 113, 0.1);
+    color: #27ae60;
+  }
+
+  .status-loader {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(52, 152, 219, 0.2);
+    border-top: 2px solid #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  .status-text {
+    flex-grow: 1;
+  }
+
+  .status-timer {
+    font-family: monospace;
+    font-size: 12px;
+    opacity: 0.8;
+    margin-left: 8px;
+  }
+
+  .cancel-button {
+    padding: 4px 8px;
+    border: none;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.1);
+    color: inherit;
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0.7;
+    transition: all 0.2s ease;
+  }
+
+  .cancel-button:hover {
+    opacity: 1;
+    background: rgba(0, 0, 0, 0.2);
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
   }
 `;
 document.head.appendChild(style);
