@@ -640,6 +640,18 @@ async function checkNetworkConnection() {
   }
 }
 
+// 更新消息状态的辅助函数
+async function updateStatus(chatId, content, status, type = 'info') {
+  const statusData = {
+    type,
+    text: status,
+    timestamp: Date.now(),
+    loadingStartTime: type === 'info' ? loadingStartTime : null
+  };
+  
+  await updateStreamContent(chatId, content || '', statusData);
+}
+
 // 发送消息
 async function sendMessage() {
   const message = userInput.value.trim();
@@ -694,21 +706,7 @@ async function sendMessage() {
     loadingMessageElement = messageElement;
     loadingStartTime = Date.now();
     
-    // 更新消息状态
-    const updateStatus = async (status, type = 'info') => {
-      const statusData = {
-        type,
-        text: status,
-        timestamp: Date.now(),
-        keepAliveCount,
-        lastKeepAliveTime,
-        loadingStartTime: type === 'info' ? loadingStartTime : null
-      };
-      
-      await updateStreamContent(currentChatId, messages[messages.length - 1].content, statusData);
-    };
-    
-    await updateStatus('正在等待 DeepSeek 服务器响应...');
+    await updateStatus(currentChatId, '', '正在等待 DeepSeek 服务器响应...');
 
     let currentMessage = '';
     console.log('DeepSeek Translator: 开始新的对话');
@@ -718,7 +716,7 @@ async function sendMessage() {
     
     try {
       console.log('DeepSeek Translator: 正在连接服务器...');
-      await updateStatus('正在连接服务器...');
+      await updateStatus(currentChatId, '', '正在连接服务器...');
       
       const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
         method: 'POST',
@@ -737,7 +735,7 @@ async function sendMessage() {
       });
 
       console.log('DeepSeek Translator: 服务器响应状态:', response.status);
-      await updateStatus('已连接到服务器，等待响应...');
+      await updateStatus(currentChatId, '', '已连接到服务器，等待响应...');
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -777,7 +775,7 @@ async function sendMessage() {
               keepAliveCount++;
               lastKeepAliveTime = Date.now();
               console.log(`DeepSeek Translator: 收到第 ${keepAliveCount} 个保活信号`);
-              await updateStatus(`正在等待服务器响应...（已收到 ${keepAliveCount} 个保活信号）`);
+              await updateStatus(currentChatId, currentMessage, `正在等待服务器响应...（已收到 ${keepAliveCount} 个保活信号）`);
               continue;
             }
 
@@ -795,7 +793,7 @@ async function sendMessage() {
                   if (!hasReceivedContent) {
                     console.log('DeepSeek Translator: 开始接收内容');
                     hasReceivedContent = true;
-                    await updateStatus('正在生成回复...');
+                    await updateStatus(currentChatId, currentMessage, '正在生成回复...');
                   }
                   
                   currentMessage += content;
@@ -810,13 +808,13 @@ async function sendMessage() {
 
           // 检查是否超过最大等待时间
           if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
-            await updateStatus('等待超时，请重试', 'error');
+            await updateStatus(currentChatId, currentMessage, '等待超时，请重试', 'error');
             throw new Error('等待超时，请重试');
           }
 
           // 检查最后一次 keep-alive 是否超过 30 秒
           if (lastKeepAliveTime && Date.now() - lastKeepAliveTime > 30000) {
-            await updateStatus('服务器响应超时，请重试', 'error');
+            await updateStatus(currentChatId, currentMessage, '服务器响应超时，请重试', 'error');
             throw new Error('服务器响应超时，请重试');
           }
         }
@@ -833,7 +831,7 @@ async function sendMessage() {
       
       if (hasReceivedContent) {
         // 更新最终状态
-        await updateStatus('回复完成', 'success');
+        await updateStatus(currentChatId, currentMessage, '回复完成', 'success');
       } else {
         throw new Error('服务器没有返回有效内容');
       }
@@ -846,7 +844,7 @@ async function sendMessage() {
   } catch (error) {
     console.error('DeepSeek Translator: 对话错误:', error);
     if (loadingMessageElement) {
-      await updateStatus(error.message, 'error');
+      await updateStatus(currentChatId, messages[messages.length - 1].content, error.message, 'error');
     } else {
       await addMessage(`错误: ${error.message}`, 'error');
     }
