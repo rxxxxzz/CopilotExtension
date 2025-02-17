@@ -4,7 +4,7 @@ let messages = [];
 let currentController = null;
 let loadingMessageElement = null;
 let loadingStartTime = 0;
-const MAX_WAIT_TIME = 60000; // 最大等待时间：60秒
+const MAX_WAIT_TIME = 1800000; // 最大等待时间：30分钟
 
 // 禁用输入
 function disableInput() {
@@ -660,6 +660,8 @@ async function sendMessage() {
   disableInput();
   let keepAliveCount = 0;
   let lastKeepAliveTime = 0;
+  let retryCount = 0;
+  const MAX_RETRIES = 100; // 设置一个较大的重试次数限制
 
   try {
     if (!isExtensionContextValid()) {
@@ -714,9 +716,9 @@ async function sendMessage() {
     // 创建新的 AbortController
     currentController = new AbortController();
     
-    try {
+    async function makeRequest() {
       console.log('DeepSeek Translator: 正在连接服务器...');
-      await updateStatus(currentChatId, '', '正在连接服务器...');
+      await updateStatus(currentChatId, currentMessage, `正在连接服务器...（第 ${retryCount + 1} 次尝试）`);
       
       const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
         method: 'POST',
@@ -729,13 +731,13 @@ async function sendMessage() {
           messages: messageHistory,
           stream: true,
           temperature: 0.7,
-          max_tokens: 2000
+          max_tokens: 6400
         }),
         signal: currentController.signal
       });
 
       console.log('DeepSeek Translator: 服务器响应状态:', response.status);
-      await updateStatus(currentChatId, '', '已连接到服务器，等待响应...');
+      await updateStatus(currentChatId, currentMessage, `已连接到服务器，等待响应...（第 ${retryCount + 1} 次尝试）`);
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -757,6 +759,7 @@ async function sendMessage() {
       const decoder = new TextDecoder();
       let buffer = '';
       let hasReceivedContent = false;
+      let shouldRetry = false;
 
       try {
         while (true) {
@@ -775,15 +778,23 @@ async function sendMessage() {
               keepAliveCount++;
               lastKeepAliveTime = Date.now();
               console.log(`DeepSeek Translator: 收到第 ${keepAliveCount} 个保活信号`);
-              await updateStatus(currentChatId, currentMessage, `正在等待服务器响应...（已收到 ${keepAliveCount} 个保活信号）`);
+              await updateStatus(currentChatId, currentMessage, `正在等待服务器响应...（第 ${retryCount + 1} 次尝试，已收到 ${keepAliveCount} 个保活信号）`);
               continue;
             }
 
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
               if (data === '[DONE]') {
-                console.log('DeepSeek Translator: 接收完成');
-                continue;
+                console.log('DeepSeek Translator: 收到 [DONE]');
+                // 只有在没有收到任何内容的情况下才重试
+                if (!hasReceivedContent) {
+                  console.log('DeepSeek Translator: 未收到内容，准备重试');
+                  shouldRetry = true;
+                } else {
+                  console.log('DeepSeek Translator: 已收到内容，完成对话');
+                  await updateStatus(currentChatId, currentMessage, '回复完成', 'success');
+                }
+                break;
               }
 
               try {
@@ -793,7 +804,7 @@ async function sendMessage() {
                   if (!hasReceivedContent) {
                     console.log('DeepSeek Translator: 开始接收内容');
                     hasReceivedContent = true;
-                    await updateStatus(currentChatId, currentMessage, '正在生成回复...');
+                    await updateStatus(currentChatId, currentMessage, `正在生成回复...（第 ${retryCount + 1} 次尝试）`);
                   }
                   
                   currentMessage += content;
@@ -808,14 +819,15 @@ async function sendMessage() {
 
           // 检查是否超过最大等待时间
           if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
-            await updateStatus(currentChatId, currentMessage, '等待超时，请重试', 'error');
-            throw new Error('等待超时，请重试');
+            await updateStatus(currentChatId, currentMessage, '已达到最大等待时间（30分钟），停止重试', 'warning');
+            return;
           }
 
           // 检查最后一次 keep-alive 是否超过 30 秒
-          if (lastKeepAliveTime && Date.now() - lastKeepAliveTime > 30000) {
-            await updateStatus(currentChatId, currentMessage, '服务器响应超时，请重试', 'error');
-            throw new Error('服务器响应超时，请重试');
+          if (lastKeepAliveTime && Date.now() - lastKeepAliveTime > 30000 && !hasReceivedContent) {
+            console.log('DeepSeek Translator: 30秒内未收到保活信号且未收到内容，准备重试');
+            shouldRetry = true;
+            break;
           }
         }
       } catch (e) {
@@ -828,18 +840,50 @@ async function sendMessage() {
       } finally {
         reader.releaseLock();
       }
-      
-      if (hasReceivedContent) {
-        // 更新最终状态
-        await updateStatus(currentChatId, currentMessage, '回复完成', 'success');
-      } else {
-        throw new Error('服务器没有返回有效内容');
+
+      return { shouldRetry, hasReceivedContent };
+    }
+
+    // 开始重试循环
+    while (retryCount < MAX_RETRIES) {
+      try {
+        const result = await makeRequest();
+        
+        if (!result.shouldRetry) {
+          // 如果不需要重试，说明已经成功完成
+          if (result.hasReceivedContent) {
+            await updateStatus(currentChatId, currentMessage, '回复完成', 'success');
+          } else {
+            throw new Error('服务器没有返回有效内容');
+          }
+          break;
+        }
+
+        // 如果需要重试，增加重试计数
+        retryCount++;
+        keepAliveCount = 0;
+        console.log(`DeepSeek Translator: 开始第 ${retryCount + 1} 次尝试`);
+        
+        // 检查是否超过最大等待时间
+        if (Date.now() - loadingStartTime >= MAX_WAIT_TIME) {
+          await updateStatus(currentChatId, currentMessage, '已达到最大等待时间（30分钟），停止重试', 'warning');
+          break;
+        }
+
+        // 等待一小段时间再重试
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (error) {
+        if (error.message === '对话已取消') {
+          throw error;
+        }
+        console.error(`DeepSeek Translator: 第 ${retryCount + 1} 次尝试失败:`, error);
+        retryCount++;
+        
+        // 如果是致命错误，直接抛出
+        if (error.message.includes('API Key') || error.message.includes('调用次数已达到限制')) {
+          throw error;
+        }
       }
-      
-    } catch (error) {
-      throw error;
-    } finally {
-      currentController = null;
     }
   } catch (error) {
     console.error('DeepSeek Translator: 对话错误:', error);
